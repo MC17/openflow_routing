@@ -5,6 +5,8 @@ Try to implement routing in pure OpenFlow environment
 
 DEBUG = True
 CONFIG_FILE = './ext/pure.config'
+HOST = 'localhost'
+PORT = 9000
 
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
@@ -20,38 +22,215 @@ log = core.getLogger()
 
 from pox.lib.addresses import IPAddr, EthAddr
 
+import socket, threading, asyncore
+
+
+class ControlHandler(asyncore.dispatcher_with_send):
+	PROMPT = '> '
+
+	def handle_read(self):
+		cmd = self.recv(1024)
+		cmd = cmd.split()
+		if not cmd:
+			reply = self.PROMPT
+			self.send(reply)
+			return
+		reply = None
+		if cmd[0] == 'show':
+			reply = self._show(cmd[1:])
+		elif cmd[0] == 'set':
+			reply = self._set(cmd[1:])
+		elif cmd[0] == 'del':
+			reply = self._delete(cmd[1:])
+		elif cmd[0] == 'help' or cmd[0] == '?':
+			reply = self._help()
+		elif cmd[0] == 'exit' or cmd[0] == 'quit':
+			self.close()
+			return
+		else:
+			reply = 'Unknown command. Try "help" for help.'
+		reply = reply + '\n' + self.PROMPT
+		self.send(reply)
+
+	def _help(self):
+		helpInfo = '''
+Supported commands:
+
+show                show all switches and their state
+show <switch name>  show a switch's detailed information
+show route          show routing information
+set <switch name> <port number> <ip addresses> <network> <cost>
+                    set a route entry as in the config file
+del <switch name> <port number>
+                    delete a route entry
+exit/quit           exit
+help/?              show this message'''
+		return helpInfo
+
+	def _delete(self, cmd):
+		try:
+			switchName = cmd[0]
+			portNumber = int(cmd[1])
+		except:
+			return 'Something wrong with your parameters'
+
+		for entry in routingEntity.routingTable:
+			if entry.name == switchName and \
+					entry.port == portNumber:
+				routingEntity.routingTable.remove(entry)
+				routingEntity.infoCondition == Routing.ROUTE_DIRTY
+				return 'Entry removed successfully'
+		return 'No such entry\n'
+
+	def _set(self, cmd):
+		try:
+			switchName = cmd[0]
+			portNumber = int(cmd[1])
+			ip = IPAddr(cmd[2])
+			network = cmd[3]
+			cost = int(cmd[4])
+		except:
+			return 'Something wrong with your parameters'
+
+		targetEntry = None
+		for entry in routingEntity.routingTable:
+			if entry.name == switchName and \
+					entry.port == portNumber:
+				targetEntry = entry
+				break
+
+		if targetEntry:
+			targetEntry.portIpAddress = ip
+			targetEntry.network = network
+			targetEntry.cost = cost
+		else:
+			new = RoutingTableEntry(switchName, portNumber, ip, network, cost)
+			routingEntity.routingTable.add(new)
+		routingEntity.infoCondition == Routing.ROUTE_DIRTY
+		return 'Route entry set successful'
+
+
+	def _show_switches(self):
+		# header of table:
+		reply = '{0:15} {1:20} {2:10} {3:5}'.format('Switch Name',
+				'Datapath ID', 'Mode', 'Ports') + '\n'
+		for dpid in switchOfDpid:
+			switch = switchOfDpid[dpid]
+			name = switch.name
+			dpid_str = dpidToStr(switch.dpid)
+			stringOfMode = {
+					1:'switch',
+					2:'router',
+					3:'hybrid'}
+			mode = stringOfMode[switch.mode]
+			ports = len(switch.ports)
+			line = '{0:15} {1:20} {2:10} {3:5}'.format(name,
+					dpid_str, mode, ports) + '\n'
+			reply += line
+		return reply
+
+	def _show_route(self):
+		stringOfConfition = {
+				0:'CLEAN',
+				1:'DIRTY'}
+		reply = 'Routing infomation is ' + \
+				stringOfConfition[routingEntity.infoCondition] + '\n'
+		# header of table:
+		reply += '{0:10} {1:5} {2:20} {3:20} {4:5}'.format('Switch',
+				'Port', 'IP', 'Network / Mask', 'Cost') + '\n'
+		for entry in routingEntity.routingTable:
+			switch = entry.name
+			port = entry.port
+			ip = entry.portIpAddress
+			network = entry.network
+			cost = entry.cost
+			line = '{0:10} {1:5} {2:20} {3:20} {4:5}'.format(switch,
+					port, ip, network, cost) + '\n'
+			reply += line
+		return reply
+
+	def _show_switch_detail(self, cmd):
+		switchName = cmd[0]
+		reply = ''
+		switch = None
+		for dpid in switchOfDpid:
+			if switchOfDpid[dpid].name == switchName:
+				switch = switchOfDpid[dpid]
+				break
+		if switch == None:
+			reply = 'No switch named with: ' + switchName
+			return reply
+		
+		reply += 'Showing switch ' + switchName + ':\n'
+		reply += 'Ports:\n'
+		portHeader = '{0:10} {1:10} {2:20} {3:10} {4:20} {5:20}'.format(
+				'Name', 'Num.', 'MAC', 'Mode', 'IP', 'Adjacency') + '\n'
+		reply += portHeader
+		for port in switch.ports:
+			name = port.name
+			number = port.number
+			mac = port.mac
+			stringOfMode = {
+					1:'switch',
+					2:'router'}
+			mode = stringOfMode[port.mode]
+			if port.ip:
+				ip = port.ip
+			else:
+				ip = 'N/A'
+			if port.adjacency:
+				adjacency = port.adjacency.name
+			elif port.network:
+				adjacency = port.network
+			else:
+				adjacency = 'N/A'
+
+			line = '{0:10} {1:10} {2:20} {3:10} {4:20} {5:20}'.format(
+					name, number, mac, mode, ip, adjacency) + '\n'
+			reply += line
+		reply += 'Next hop:\n'
+		nextHopHeader = '{0:15} {1:15}'.format('Destination', 'Next hop') \
+						+ '\n'
+		reply += nextHopHeader
+		for s in switch.nextHop:
+			line = '{0:15} {1:15}'.format(s.name, switch.nextHop[s].name) \
+					+ '\n'
+			reply += line
+		return reply
+
+	def _show(self, cmd):
+		reply = None
+		if cmd == []:
+			reply = self._show_switches()
+		elif cmd[0] == 'route':
+			reply = self._show_route()
+		else:
+			reply = self._show_switch_detail(cmd)
+		return reply
+
+
+
+controllInterfaceServer = None
+
+class ControlInterfaceServer(asyncore.dispatcher):
+	def	 __init__(self):
+		asyncore.dispatcher.__init__(self)
+		self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+		self.set_reuse_addr()
+		self.bind( (HOST, PORT) )
+		self.listen(1)
+
+	def handle_accept(self):
+		pair = self.accept()
+		if pair is not None:
+			socket, address = pair
+			print 'Incoming connection from ', address
+			handler = ControlHandler(socket)
+			socket.send('welcome!\n' + ControlHandler.PROMPT)
+
 # datapath id -> switch instance
 # example: switchOfDpid[dpid] = switch instance
 switchOfDpid = {}
-
-class Host(object):
-	def __init__(self, mac, ip):
-		if isinstance(mac, EthAddr):
-			self.mac = mac
-		else:
-			raise TypeError("MAC address must be of type EthAddr")
-		if isinstance(ip, IPAddr):
-			self.ip = ip
-		else:
-			raise TypeError("IP address must be of type IPAddr")
-
-	def __eq__(self, other):
-		if self == other:
-			return True
-		else:
-			return False
-
-# host -> dpid + port (position of host)
-# example: positionOfHost[Host instance] = (dpid, port)
-positionOfHost = {}
-
-# mac address -> host
-# example: hostOfMac[EthAddr instance] = Host instance
-hostOfMac = {}
-
-# ip address -> host
-# example: hostOfIP[IPAddr instance] = Host instance
-hostOfIP = {}
 
 class RoutingTableEntry(object):
 	def __init__(self, switchName, portNumber, ipAddress, \
@@ -716,6 +895,10 @@ class Pure(EventMixin):
 		self.listenTo(core.openflow_discovery)
 		global routingEntity
 		routingEntity = Routing()
+		self.server = ControlInterfaceServer()
+		self.server_thread = threading.Thread(target = asyncore.loop)
+		self.server_thread.daemon = True
+		self.server_thread.start()
 
 	def _handle_ConnectionUp(self, event):
 		try:
