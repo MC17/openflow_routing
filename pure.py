@@ -270,6 +270,7 @@ class Port(EventMixin):
 
 	SWITCH_MODE = 1
 	ROUTER_MODE = 2
+	# TODO: add a PPP mode for links between routers
 
 	def __init__(self, switch, port):
 		self.name = port.name
@@ -617,16 +618,28 @@ class Switch(EventMixin):
 		if routingEntity.infoCondition == routingEntity.ROUTE_DIRTY:
 			routingEntity.calculate()
 
-		destSwitch = routingEntity.findSwitchOfDest(self, ipPacket.dstip)
+		destIp = ipPacket.dstip
+		destSwitch = routingEntity.findSwitchOfDest(self, destIp)
 
 		if destSwitch == None:
 			# no route to the dest network
 			# TODO should send an ICMP but drop it by now
 			self._drop(event)
+		elif destSwitch == self:
+			outPort = routingEntity.getOutPortForIp(self, destIp)
+			self.installLastHop(event, destIp, outPort)
 		else:
-			path = routingEntity.getRoute(self, destSwitch)
-			routingEntity.installRoute(event, self, destSwitch,
-										path, ipPacket.dstip)
+			nextHopSwitch = self.nextHop[destSwitch]
+			outPort, peerPort = self.adjacency[nextHopSwitch]
+			peerMac = routingEntity._getMacOfPort(nextHopSwitch, peerPort)
+			self.installRouteEntry(destIp, outPort, peerMac)
+			self._router_output(event, outPort, peerMac)
+
+			if DEBUG:
+				print '*** Next Hop:'
+				print self, nextHopSwitch
+				print outPort, peerPort
+
 
 
 	def _router_packetIn_handler(self, event):
