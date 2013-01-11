@@ -79,6 +79,10 @@ help/?              show this message'''
 					entry.port == portNumber:
 				routingEntity.routingTable.remove(entry)
 				routingEntity.infoCondition == Routing.ROUTE_DIRTY
+				switch = routingEntity._getSwitchByName(switchName)
+				port = switch.getPort(portNumber)
+				port.mode = Port.SWITCH_MODE
+				switch._update_mode()
 				return 'Entry removed successfully'
 		return 'No such entry\n'
 
@@ -104,8 +108,18 @@ help/?              show this message'''
 			targetEntry.network = network
 			targetEntry.cost = cost
 		else:
+			switch = routingEntity._getSwitchByName(switchName)
+			if not switch:
+				return 'No such switch'
+			port = switch.getPort(portNumber)
+			port.mode = Port.ROUTER_MODE
+			port.ip = ip
+			port.network = network
+			port.cost = cost
+			switch._update_mode()
 			new = RoutingTableEntry(switchName, portNumber, ip, network, cost)
 			routingEntity.routingTable.add(new)
+			routingEntity.costToNetwork[switchName, network] = cost
 		routingEntity.infoCondition == Routing.ROUTE_DIRTY
 		return 'Route entry set successful'
 
