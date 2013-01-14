@@ -79,10 +79,10 @@ help/?              show this message'''
 					entry.port == portNumber:
 				routingEntity.routingTable.remove(entry)
 				routingEntity.infoCondition == Routing.ROUTE_DIRTY
-				switch = routingEntity._getSwitchByName(switchName)
+				switch = routingEntity.getSwitchByName(switchName)
 				port = switch.getPort(portNumber)
 				port.mode = Port.SWITCH_MODE
-				switch._update_mode()
+				switch.update_mode()
 				return 'Entry removed successfully'
 		return 'No such entry\n'
 
@@ -108,7 +108,7 @@ help/?              show this message'''
 			targetEntry.network = network
 			targetEntry.cost = cost
 		else:
-			switch = routingEntity._getSwitchByName(switchName)
+			switch = routingEntity.getSwitchByName(switchName)
 			if not switch:
 				return 'No such switch'
 			port = switch.getPort(portNumber)
@@ -116,7 +116,7 @@ help/?              show this message'''
 			port.ip = ip
 			port.network = network
 			port.cost = cost
-			switch._update_mode()
+			switch.update_mode()
 			new = RoutingTableEntry(switchName, portNumber, ip, network, cost)
 			routingEntity.routingTable.add(new)
 			routingEntity.costToNetwork[switchName, network] = cost
@@ -137,9 +137,9 @@ help/?              show this message'''
 					2:'router',
 					3:'hybrid'}
 			mode = stringOfMode[switch.mode]
-			ports = len(switch.ports)
+			port_num = len(switch.ports)
 			line = '{0:15} {1:20} {2:10} {3:5}'.format(name,
-					dpid_str, mode, ports) + '\n'
+					dpid_str, mode, port_num) + '\n'
 			reply += line
 		return reply
 
@@ -223,9 +223,6 @@ help/?              show this message'''
 		return reply
 
 
-
-controllInterfaceServer = None
-
 class ControlInterfaceServer(asyncore.dispatcher):
 	def	 __init__(self):
 		asyncore.dispatcher.__init__(self)
@@ -286,17 +283,17 @@ class Routing(object):
 			new = RoutingTableEntry(line[0],	# switchName
 					int(line[1]),				# portNumber
 					IPAddr(line[2]),			# ipAddress
-					line[3],					# network
+					line[3],					# network with netmask, string
 					int(line[4]))				# cost
 			self.routingTable.add(new)
 			self.costToNetwork[line[0],line[3]] = int(line[4])
-		# data structure used in routing calculation
+		# data structures used in routing calculation
 		self.cost = {}	# cost of any pair
 						# example:	cost[switch A, switch B] = 10
 		self.infoCondition = self.ROUTE_DIRTY
 		
 
-	def findSwitchNameAndNetworkOfDest(self, destIp):
+	def _findSwitchNameAndNetworkOfDest(self, destIp):
 		dest = IPAddr(destIp)
 		ans = []
 		for entry in self.routingTable:
@@ -304,7 +301,7 @@ class Routing(object):
 				ans.append( (entry.name, entry.network) )
 		return ans
 
-	def _getSwitchByName(self, name):
+	def getSwitchByName(self, name):
 		for dpid in switchOfDpid:
 			if switchOfDpid[dpid].name == name:
 				return switchOfDpid[dpid]
@@ -313,7 +310,7 @@ class Routing(object):
 	def findSwitchOfDest(self, srcSwitch, destIp):
 		# find switch(maybe many) connected to the dest network
 		temp = []
-		nameAndNet = self.findSwitchNameAndNetworkOfDest(destIp)
+		nameAndNet = self._findSwitchNameAndNetworkOfDest(destIp)
 	
 		for dpid in switchOfDpid:
 			for name,network in nameAndNet:
@@ -327,6 +324,7 @@ class Routing(object):
 		nearest = None # (switch, network)
 		for switch, network in temp:
 			try:
+				# total cost = cost between switch + switch to network
 				c = self.cost[srcSwitch, switch] + \
 					self.costToNetwork[switch.name, network]
 				if nearest == None or \
@@ -340,20 +338,9 @@ class Routing(object):
 					continue
 
 		if nearest:
-			return nearest[0]
+			return nearest[0]	# nearest : ( switch, network )
 		else:
 			return None
-
-	def getRoute(self, srcSwitch, destSwitch):
-		path = []
-		if srcSwitch == destSwitch:
-			return path
-
-		now = srcSwitch.nextHop[destSwitch]
-		while now != destSwitch:
-			path.append(now)
-			now = now.nextHop[destSwitch]
-		return path
 
 	
 	def _are_adjacency(self, u, v):
@@ -366,6 +353,7 @@ class Routing(object):
 
 	def calculate(self):
 		# floyd-warshall algorithm
+
 		# init data structures
 		self.cost = {}
 		allSwitches = []
@@ -428,35 +416,6 @@ class Routing(object):
 			if port.number == portNumber:
 				return port.mac
 
-	def	installRoute(self, event, srcSwitch, destSwitch, path, destIp):
-		destSwitch.installLastHop(event, destIp, 
-						self.getOutPortForIp(destSwitch, destIp))
-		if srcSwitch == destSwitch:
-			return
-
-
-		fullPath = []
-		fullPath.append(srcSwitch)
-		fullPath.extend(path)
-		if DEBUG:
-			print '*** fullPath of ', srcSwitch, destSwitch
-			print fullPath
-
-		# install flow in reverse order to avoid another 
-		# PacketIn event
-		fullPath.reverse()
-		
-		for i in range(0, len(fullPath)):
-			curr = fullPath[i]
-			if i == 0:
-				curr.installRouteEntry(destIp, curr.adjacency[destSwitch][0],
-				self._getMacOfPort(destSwitch, curr.adjacency[destSwitch][1]))
-			else:
-				nextHop = fullPath[i - 1]
-				curr.installRouteEntry(destIp, curr.adjacency[nextHop][0],
-					self._getMacOfPort(nextHop, curr.adjacency[nextHop][1]))
-	
-
 
 
 class Port(EventMixin):
@@ -473,7 +432,7 @@ class Port(EventMixin):
 		self.switch = switch	# which switch this port belongs to
 		self.mode = self.SWITCH_MODE
 	
-		# for routing only
+		# for router mode only
 		self.ip = None
 		self.network = None
 		self.adjacency = None
@@ -513,12 +472,11 @@ class Switch(EventMixin):
 
 	def __init__(self, dpid, connection):
 		self.dpid = dpid
-		self.connection = connection
+		self.connection = connection # openflow protocol connection
 		self.name = None	# name of the switch, like "s1"
 		self.ports = self._init_ports(connection.features.ports)
 		self._config_ports()
-		self.mode = self.SWITCH_MODE
-		self._update_mode()
+		self.update_mode() # decide if switch is in switch/router/hybrid mode
 		self.listeners = self.listenTo(connection)
 		# for routing
 		self.nextHop = {} # nextHop[destination switch] = next hop switch
@@ -536,7 +494,8 @@ class Switch(EventMixin):
 						# example: queue.append(event)
 		if DEBUG:
 			for port in self.ports:
-				print port.name, port.number, port.mac, port.ip, port.network, port.mode
+				print port.name, port.number, port.mac, port.ip, \
+						port.network, port.mode
 
 	def _init_ports(self, ports):
 		portList = []
@@ -575,10 +534,11 @@ class Switch(EventMixin):
 					port.mode = Port.ROUTER_MODE
 					self._install_flow_forward_to_controller(port.ip)
 				else:
-					log.warning('switch %s has no port %s, check the config file' % 
-																(line[0], line[1]))
+					log.warning (\
+					'switch %s has no port %s, check the config file' \
+						   	% (line[0], line[1]))
 
-	def _update_mode(self):
+	def update_mode(self):
 		routerMode = 0
 		switchMode = 0
 		for port in self.ports:
@@ -596,6 +556,7 @@ class Switch(EventMixin):
 		self.mode = self.HYBRID_MODE
 
 	def getPort(self, portNumber):
+		# get port by port number
 		for	port in self.ports:
 			if int(port.number) == int(portNumber):
 				return port
@@ -614,7 +575,8 @@ class Switch(EventMixin):
 		port.adjacency = None
 		try:
 			del self.adjacency[switchOfDpid[remoteSwitchDpid]]
-			print '*** adjacency removed:', switchOfDpid[remoteSwitchDpid]
+			if DEBUG:
+				print '*** adjacency removed:', switchOfDpid[remoteSwitchDpid]
 		except KeyError:
 			pass
 		routingEntity.infoCondition = Routing.ROUTE_DIRTY
@@ -624,18 +586,25 @@ class Switch(EventMixin):
 		msg.data = event.ofp
 		msg.in_port = event.port
 		if self.mode == self.SWITCH_MODE:
+			# if switch is in switch mode,
+			# i.e. all ports are in switch mode
 			msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
 		else:
 			for p in self.ports:
-				if p.mode == Port.SWITCH_MODE and (not int(p.number) == int(event.port)):
+				if p.mode == Port.SWITCH_MODE and \
+						   (not int(p.number) == int(event.port)):
+				# if port is in switch mode and not the ingress port
 					msg.actions.append(of.ofp_action_output(port = p.number))
-				# this implies that if ingress port is the only SWITCH_MODE port,
-				# the packet will be dropped
+				# Note that this implies that if the ingress port is the 
+				# only SWITCH_MODE port, the actions list would be empty,
+				# and the packet will be dropped
 		self.connection.send(msg)
 
 	def _drop(self, event, install_flow_entry = False):
 		packet = event.parsed
 		if install_flow_entry:
+		# if install_flow_entry, then it's a flow_mod message,
+		# else it's a packet_out message
 			msg = of.ofp_flow_mod()
 			msg.match = of.ofp_match(in_port = event.port,
 									 dl_dst = packet.dst)
@@ -667,7 +636,8 @@ class Switch(EventMixin):
 
 	def _switch_packetIn_handler(self, event):
 		'''
-			_switch_packetIn_handler handles SWITCH_MODE port's packetIn messages
+			_switch_packetIn_handler handles SWITCH_MODE port's 
+			packetIn messages
 		'''
 		packet = event.parsed
 		self.portOfMac[packet.src] = event.port
@@ -682,6 +652,7 @@ class Switch(EventMixin):
 				self._output_toPort(event, outport)
 
 	def	 _tryPurgeQueue(self):
+		# try to send buffered packet
 		for i in range(0, len(self.queue)):
 			packet = self.queue[i].parsed
 			ipPacket = packet.next
@@ -722,6 +693,7 @@ class Switch(EventMixin):
 			self._drop(event)
 
 	def _router_handle_icmp(self, event):
+		# NOTE handles ECHO messages for now only
 		packet = event.parsed
 		ipPacket = packet.next
 		icmpPacket = ipPacket.next
@@ -796,6 +768,7 @@ class Switch(EventMixin):
 		self.connection.send(msg)
 
 	def installLastHop(self, event, destIp, outPort):
+		# when "self" is the last hop to destination network
 		dest = IPAddr(destIp)
 		if dest in self.arp:
 			peerMac = self.arp[dest]
@@ -812,6 +785,11 @@ class Switch(EventMixin):
 			routingEntity.calculate()
 
 		destIp = ipPacket.dstip
+		if destIp == IPAddr('255.255.255.255'):
+			# router does not forward local network broadcast
+			# or should act as a DHCP server?
+			self._drop(event)
+
 		destSwitch = routingEntity.findSwitchOfDest(self, destIp)
 
 		if destSwitch == None:
@@ -833,11 +811,10 @@ class Switch(EventMixin):
 				print self, nextHopSwitch
 				print outPort, peerPort
 
-
-
 	def _router_packetIn_handler(self, event):
 		'''
-			_router_packetIn_handler handles ROUTER_MODE port's packetIn messages
+			_router_packetIn_handler handles ROUTER_MODE port's 
+			packetIn messages
 		'''
 		packet = event.parsed
 		port = self.getPort(event.port)
@@ -907,8 +884,10 @@ class Pure(EventMixin):
 	def __init__(self):
 		self.listenTo(core.openflow, priority = 0)
 		self.listenTo(core.openflow_discovery)
+		# init routingEntity
 		global routingEntity
 		routingEntity = Routing()
+		# init telnet-like controll interface
 		self.server = ControlInterfaceServer()
 		self.server_thread = threading.Thread(target = asyncore.loop)
 		self.server_thread.daemon = True
