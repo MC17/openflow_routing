@@ -177,7 +177,7 @@ help/?              show this message'''
 		
 		reply += 'Showing switch ' + switchName + ':\n'
 		reply += 'Ports:\n'
-		portHeader = '{0:10} {1:10} {2:20} {3:10} {4:20} {5:20}'.format(
+		portHeader = '{0:10} {1:5} {2:20} {3:10} {4:20} {5:20}'.format(
 				'Name', 'Num.', 'MAC', 'Mode', 'IP', 'Adjacency') + '\n'
 		reply += portHeader
 		for port in switch.ports:
@@ -199,7 +199,7 @@ help/?              show this message'''
 			else:
 				adjacency = 'N/A'
 
-			line = '{0:10} {1:10} {2:20} {3:10} {4:20} {5:20}'.format(
+			line = '{0:10} {1:5} {2:20} {3:10} {4:20} {5:20}'.format(
 					name, number, mac, mode, ip, adjacency) + '\n'
 			reply += line
 		reply += 'Next hop:\n'
@@ -785,10 +785,11 @@ class Switch(EventMixin):
 			routingEntity.calculate()
 
 		destIp = ipPacket.dstip
-		if destIp == IPAddr('255.255.255.255'):
-			# router does not forward local network broadcast
-			# or should act as a DHCP server?
-			self._drop(event)
+		#XXX seems some other program already handles broadcast
+#		if destIp == IPAddr('255.255.255.255'):
+#			# router does not forward local network broadcast
+#			# or should act as a DHCP server?
+#			self._drop(event)
 
 		destSwitch = routingEntity.findSwitchOfDest(self, destIp)
 
